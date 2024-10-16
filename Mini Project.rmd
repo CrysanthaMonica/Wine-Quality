@@ -1,0 +1,276 @@
+---
+title: "Bayesian"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+date: "2023-12-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+df <- read.csv("winequalityN.csv")
+head(df)
+```
+```{r}
+summary(df)
+```
+```{r}
+df$fixed.acidity[is.na(df$fixed.acidity)] <- median(df$fixed.acidity, na.rm = TRUE)
+df$volatile.acidity[is.na(df$volatile.acidity)] <- median(df$volatile.acidity, na.rm = TRUE)
+df$citric.acid[is.na(df$citric.acid)] <- median(df$citric.acid, na.rm = TRUE)
+df$residual.sugar[is.na(df$residual.sugar)] <- median(df$residual.sugar, na.rm = TRUE)
+df$chlorides[is.na(df$chlorides)] <- median(df$chlorides, na.rm = TRUE)
+df$pH[is.na(df$pH)] <- median(df$pH, na.rm = TRUE)
+df$sulphates[is.na(df$sulphates)] <- median(df$sulphates, na.rm = TRUE)
+```
+
+```{r}
+summary(df)
+```
+
+
+
+```{r}
+df$quality <- ifelse(df$quality <= 5, 0, 1)
+df
+```
+
+
+
+
+```{r}
+Y<-df[,13]
+X<-scale(df[2:12])
+n<-length(Y)
+```
+
+```{r}
+library(rjags)
+burn <- 200
+iters <- 1000
+chains <- 2
+```
+
+```{r}
+mod <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+  Y[i] ~ dbern(q[i])
+  logit(q[i]) <- alpha + inprod(X[i,],beta[])
+  # WAIC Computation
+  like[i] <- dbin(Y[i],q[i],1) 
+  }
+  
+  #Prior
+  for(j in 1:11){beta[j] ~ dnorm(0,0.01)}
+  
+  alpha ~ dnorm(0,0.01)
+}")
+```
+
+```{r}
+mod <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+  Y[i] ~ dbern(q[i])
+  logit(q[i]) <- beta[1] + X[i,1]*beta[2] + X[i,2]*beta[3] +
+                  X[i,3]*beta[4] + X[i,4]*beta[5] + X[i,5]*beta[6] +
+                  X[i,6]*beta[7] + X[i,7]*beta[8] + X[i,8]*beta[9] +
+                  X[i,9]*beta[10] + X[i,10]*beta[11] + X[i,11]*beta[12]
+  }
+  
+  #Prior
+  for(j in 1:12){beta[j] ~ dnorm(0,0.01)}
+  
+}")
+```
+
+##Model with posterior predictive check
+
+```{r}
+mod_select <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) <- alpha + inprod(X[i,],beta[])
+    # WAIC Computation
+    like[i] <- dbin(Y[i], q[i], 1) 
+  }
+  
+  #Prior
+  for(j in 1:11){beta[j] ~ dnorm(0,0.01)}
+  
+  alpha ~ dnorm(0,0.01)
+  
+  #Posterior predictive checks
+  for(i in 1:n){
+    Y2[i] ~ dbern(q[i])
+  }
+  
+  S <- sum(Y2[])/n
+  
+}")
+```
+
+
+##Generate samples with MCMC sampling for the Model 
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model_select <- jags.model(mod_select,data=data, n.chains = chains, quiet=TRUE)
+update(model_select, burn)
+samps_beta <- coda.samples(model_select,variable.names=c("S", "beta"), n.iter = iters, n.thin=5)
+```
+
+## Summary
+```{r}
+summary(samps_beta)
+```
+
+## Convergence Check for the Model(Geweke)
+```{r}
+# a |Z| > 2 indicates poor convergence
+geweke.diag(samps_beta)
+```
+
+## Convergence Check for the Model (Gelman Rubin)
+```{r}
+# 1 is good, >1.1 indicates poor convergence
+gelman.diag(samps_beta)
+```
+
+## Auto-Correlation for the Model (plot)
+```{r}
+autocorr.plot(samps_beta)
+```
+
+## Auto-Correlation for the Model
+```{r}
+autocorr(samps_beta)
+```
+
+## Posterior Predictive Check for the Model
+```{r}
+# take samples from the second chain
+S <- samps_beta[[2]][,1]
+
+#compute the test stats for the data
+S0 <- (sum(Y)/n)
+Snames <- "Proportion Y"
+
+#compute the test stats for the model
+pval <- rep(0,1)
+names(pval) <- Snames
+
+plot(density(S),xlim=range(c(S0,S)), xlab="S", ylab="Posterior probability",main=Snames)
+abline(v=S0,col=2)
+legend("topleft",c("Model","Data"),lty=1,col=1:2,bty="n")
+
+pval <- mean(S>S0)
+
+pval
+```
+
+## Model Evaluation for the Model (DIC)
+```{r}
+DIC <- dic.samples(model_select, n.iter=iters,n.thin = 5)
+DIC
+```
+
+## Model Evaluation for the Model (WAIC)
+```{r}
+samps_like_select <- coda.samples(model_select, variable.names = c("like"), n.iter=iters)
+like_select <- rbind(samps_like_select[[1]], samps_like_select[[2]]) # Combine samples from the two chain
+fbar <- colMeans(like_select)
+P <- sum(apply(log(like_select),2,var))
+WAIC <- -2*sum(log(fbar))+2*P
+WAIC
+```
+
+
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model <- jags.model(mod,data=data, n.chains = chains,quiet=TRUE)
+update(model,burn)
+samps <- coda.samples(model,variable.names=c("beta","like"),n.iter = iters,n.thin=5)
+
+```
+
+```{r}
+post_burn_samples <- matrix(1:(iters * chains), ncol = chains)[(burn+1):iters,]
+post_burn_samples
+```
+
+
+
+```{r}
+summary(samps)
+```
+
+```{r}
+beta <- NULL
+for(l in 1:chains){
+beta <- rbind(beta,samps[[l]])
+}
+Inc_Prob <- apply(beta!=0,2,mean)
+Q <- t(apply(beta,2,quantile,c(0.5,0.05,0.95)))
+out <- cbind(Inc_Prob,Q)
+```
+
+
+```{r}
+out
+```
+
+```{r}
+library(usethis) 
+usethis::edit_r_environ()
+```
+
+```{r}
+install.packages('usethis')
+```
+
+```{r}
+# Compute DIC
+DIC <- dic.samples(model,n.iter=iters,n.thin = 5)
+# Compute WAIC
+like <- samps[[like]]
+fbar <- colMeans(like)
+Pw <- sum(apply(log(like),2,var))
+WAIC <- -2*sum(log(fbar))+2*Pw
+DIC
+```
+```{r}
+DIC <- dic.samples(model,n.iter=iters,n.thin = 5)
+waic <- coda.samples(model, variable.names=c("like"), n.iter=iters)
+like <- waic[[1]]
+fbar <- colMeans(like)
+P <- sum(apply(log(like),2,var))
+WAIC <- -2*sum(log(fbar))+2*P
+```
+
+
+```{r}
+DIC
+```
+
+
+
+```{r}
+samps[[1]]
+```
+
+```{r}
+WAIC;P
+```
+
+```{r}
+gc()
+```
+
+

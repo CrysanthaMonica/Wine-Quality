@@ -1,0 +1,410 @@
+---
+title: "Model 2_Final Project Bayes"
+author: "2602105090_Jennifer Ardelia Limicia"
+date: "2023-12-25"
+output: pdf_document
+---
+
+Import Data
+```{r}
+# memasukkan data ke dalam dataframe ‘df’
+df <- read.csv("winequalityN.csv")
+df
+```
+
+Check Missing Value
+```{r}
+# mengecek apakah terdapat NaN values pada masing-masing kolom
+summary(df)
+```
+
+Impute Missing Value
+```{r}
+# imputing missing values dengan median
+df$fixed.acidity[is.na(df$fixed.acidity)] <- median(df$fixed.acidity, na.rm = TRUE)
+df$volatile.acidity[is.na(df$volatile.acidity)] <- median(df$volatile.acidity, na.rm = TRUE)
+df$citric.acid[is.na(df$citric.acid)] <- median(df$citric.acid, na.rm = TRUE)
+df$residual.sugar[is.na(df$residual.sugar)] <- median(df$residual.sugar, na.rm = TRUE)
+df$chlorides[is.na(df$chlorides)] <- median(df$chlorides, na.rm = TRUE)
+df$pH[is.na(df$pH)] <- median(df$pH, na.rm = TRUE)
+df$sulphates[is.na(df$sulphates)] <- median(df$sulphates, na.rm = TRUE)
+```
+```{r}
+summary(df)
+```
+
+
+Encoding Wine Quality
+```{r}
+# mengklasifikasi kualitas wine (0 - poor untuk quality <=5 dan 1- excellent untuk quality > 5)
+df$quality <- ifelse(df$quality <= 5, 0, 1)
+```
+
+
+```{r}
+Y<-df[,12]
+scaled_data<-scale(df[2:11])
+X<-cbind(scaled_data, df[,13])
+n<-length(Y)
+p <- ncol(X)
+
+library(rjags)
+burn <- 500
+iters <- 2000
+chains <- 2
+
+mod1 <- textConnection("model{
+ # Likelihood (dnorm uses a precision, not variance)
+ for(i in 1:n){
+ Y[i] ~ dnorm(alpha + inprod(X[i,],beta[]), tau) #tau = 1/sigma^2
+ # WAIC Computation
+ like[i] <- dnorm(Y[i], alpha + inprod(X[i,],beta[]), tau)
+ }
+ 
+ # Priors
+ tau ~ dgamma(0.1, 0.1)
+ sigma <- 1/sqrt(tau)
+ for(j in 1:11){beta[j] ~ dnorm(0,0.01)}
+ alpha ~ dnorm(0,0.001)
+ 
+#Posterior predictive checks
+ for(i in 1:n){
+  Y2[i] ~ dnorm(alpha + inprod(X[i,],beta[]), tau)
+ }
+ 
+ D[1] <- min(Y2[])
+ D[2] <- max(Y2[])
+ D[3] <- max(Y2[])-min(Y2[])
+}")
+```
+
+
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model <- jags.model(mod1, data=data, n.chains = chains, quiet=TRUE)
+update(model, burn)
+samps <- coda.samples(model,variable.names=c("D", "beta", "sigma"), n.iter = iters, n.thin=5)
+
+summary(samps)
+```
+```{r}
+par(mar = c(1, 1, 1, 1))
+plot(samps)
+```
+
+
+
+Decide Y/target variables & X/features used 
+```{r}
+# mengambil kolom ke-13 (quality) sebagai output variable dan kolom 2-12 sebagai input variables
+Y<-df[,13]
+X<-scale(df[2:12])
+n<-length(Y)
+```
+
+Initiate burn in, iterations/post burn in, and number of chains 
+```{r}
+library(rjags)
+burn <- 1000
+iters <- 5000
+chains <- 2
+```
+
+SSVS Model
+```{r}
+mod_SSVS <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) <- alpha + inprod(X[i,],beta[])
+  }
+  
+  #Prior
+  for(j in 1:11){
+    beta[j] <- gamma[j]*delta[j]
+    gamma[j] ~ dbern(0.5)
+    delta[j] ~ dnorm(0,0.01)
+  }
+  alpha ~ dnorm(0,0.01)
+}")
+```
+
+SSVS MCMC Sampling
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model_SSVS <- jags.model(mod_SSVS,data=data, n.chains = chains, quiet=TRUE)
+update(model_SSVS, burn)
+samps_SSVS <- coda.samples(model_SSVS,variable.names=c("beta"), n.iter = iters, n.thin=5)
+```
+
+SSVS Sample Summary
+```{r}
+summary(samps_SSVS)
+```
+
+SSVS sample trace
+```{r}
+plot(samps_SSVS)
+```
+
+inc prob
+```{r}
+beta <- NULL
+for(l in 1:chains){
+  beta <- rbind(beta,samps_SSVS[[l]])
+}
+
+inc_prob <- apply(beta!=0,2,mean)
+q <- t(apply(beta,2,quantile,c(0.5,0.025,0.975)))
+out <- cbind(inc_prob,q)
+out
+```
+Based on SSVS conducted, there are some features that are not really suitable for the model, therefore we create a new model with the selected features
+
+### Model with selected features
+Selected features (Decide Y/target variables & X/features used in model with selected features)
+```{r}
+# mengambil kolom ke-13 (quality) sebagai output variable dan kolom 2-12 sebagai input variables
+Y<-df[,13]
+X<-scale(df[, c(3, 5, 7, 8, 11, 12)])
+n<-length(Y)
+```
+
+Selected Features Model
+```{r}
+mod_select <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) <- alpha + inprod(X[i,],beta[])
+    # WAIC Computation
+    like[i] <- dbin(Y[i], q[i], 1) 
+  }
+  
+  #Prior
+  for(j in 1:6){beta[j] ~ dnorm(0,0.01)}
+  
+  alpha ~ dnorm(0,0.01)
+  
+  #Posterior predictive checks
+  for(i in 1:n){
+    Y2[i] ~ dbern(q[i])
+  }
+  
+  S <- sum(Y2[])/n
+  
+}")
+```
+
+Generate samples with MCMC sampling for the Model with Selected Features (Beta)
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model_select <- jags.model(mod_select,data=data, n.chains = chains, quiet=TRUE)
+update(model_select, burn)
+samps_beta_selected <- coda.samples(model_select,variable.names=c("S", "beta"), n.iter = iters, n.thin=5)
+```
+
+```{r}
+summary(samps_beta_selected)
+```
+
+Sample Trace for the Model with Selected Features
+```{r}
+par(mar = c(1, 1, 1, 1))
+plot(samps_beta_selected)
+```
+
+Convergence Check for the Model with Selected Features (Geweke)
+```{r}
+# a |Z| > 2 indicates poor convergence
+geweke.diag(samps_beta_selected)
+```
+
+Convergence Check for the Model with Selected Features (Gelman Rubin)
+```{r}
+# 1 is good, >1.1 indicates poor convergence
+gelman.diag(samps_beta_selected)
+```
+
+Auto-Correlation for the Model with Selected Features (plot)
+```{r}
+autocorr.plot(samps_beta_selected)
+```
+
+Auto-Correlation for the Model with Selected Features
+```{r}
+autocorr(samps_beta_selected)
+```
+The autocorrelation of the samples are low, showing that the samples of each iterations are independent of each other
+
+Posterior Predictive Check for the Model with Selected Features
+```{r}
+# take samples from the second chain
+S <- samps_beta_selected[[2]][,1]
+
+#compute the test stats for the data
+S0 <- (sum(Y)/n)
+Snames <- "Proportion Y"
+
+#compute the test stats for the model
+pval <- rep(0,1)
+names(pval) <- Snames
+
+plot(density(S),xlim=range(c(S0,S)), xlab="S", ylab="Posterior probability",main=Snames)
+abline(v=S0,col=2)
+legend("topleft",c("Model","Data"),lty=1,col=1:2,bty="n")
+
+pval <- mean(S>S0)
+
+pval
+```
+
+
+Model Evaluation for the Model with Selected Features (DIC)
+```{r}
+DIC <- dic.samples(model_select, n.iter=iters,n.thin = 5)
+DIC
+```
+
+Model Evaluation for the Model with Selected Features (WAIC)
+```{r}
+samps_like_select <- coda.samples(model_select, variable.names = c("like"), n.iter=iters)
+like_select <- rbind(samps_like_select[[1]], samps_like_select[[2]]) # Combine samples from the two chain
+fbar <- colMeans(like_select)
+P <- sum(apply(log(like_select),2,var))
+WAIC <- -2*sum(log(fbar))+2*P
+WAIC
+```
+
+
+### Model 2
+Decide Y/target variables & X/features used in model 2
+```{r}
+# mengambil kolom ke-13 (quality) sebagai output variable dan kolom 2-12 sebagai input variables
+Y<-df[,13]
+X<-scale(df[2:12])
+n<-length(Y)
+```
+
+Model 2
+```{r}
+mod <- textConnection("model{
+  #Likelihood
+  for(i in 1:n){
+    Y[i] ~ dbern(q[i])
+    logit(q[i]) <- alpha + inprod(X[i,],beta[])
+    # WAIC Computation
+    like[i] <- dbin(Y[i], q[i], 1) 
+  }
+  
+  #Prior
+  for(j in 1:11){beta[j] ~ dnorm(0, 1)}
+  
+  alpha ~ dnorm(0, 1)
+  
+  #Posterior predictive checks
+  for(i in 1:n){
+    Y2[i] ~ dbern(q[i])
+  }
+  
+  D <- sum(Y2[])/n
+  
+}")
+```
+
+Generate samples with MCMC sampling (Beta)
+```{r}
+data <- list(Y=Y,X=X,n=n)
+model <- jags.model(mod,data=data, n.chains = chains, quiet=TRUE)
+update(model, burn)
+samps_beta <- coda.samples(model,variable.names=c("D", "beta"), n.iter = iters, n.thin=5)
+```
+
+```{r}
+summary(samps_beta)
+```
+
+Sample Trace
+```{r}
+par(mar = c(1, 1, 1, 1))
+plot(samps_beta)
+```
+
+Convergence Check (Geweke)
+```{r}
+# a |Z| > 2 indicates poor convergence
+geweke.diag(samps_beta)
+```
+
+Convergence Check (Gelman Rubin)
+```{r}
+# 1 is good, >1.1 indicates poor convergence
+gelman.diag(samps_beta, multivariate=FALSE)
+```
+
+Auto-Correlation (plot)
+```{r}
+autocorr.plot(samps_beta)
+```
+
+Auto-Correlation
+```{r}
+autocorr(samps_beta)
+```
+The autocorrelation of the samples are low, showing that the samples of each iterations are independent of each other
+
+Posterior Predictive Check
+```{r}
+# take samples from the second chain
+D <- samps_beta[[2]][,1]
+
+#compute the test stats for the data
+D0 <- (sum(Y)/n)
+Dnames <- "Proportion Y"
+
+#compute the test stats for the model
+pval <- rep(0,1)
+names(pval) <- Dnames
+
+plot(density(D),xlim=range(c(D0,D)), xlab="D", ylab="Posterior probability",main=Dnames)
+abline(v=D0,col=2)
+legend("topleft",c("Model","Data"),lty=1,col=1:2,bty="n")
+
+pval <- mean(D>D0)
+```
+
+
+```{r}
+beta <- NULL
+for(l in 1:chains){
+  beta <- rbind(beta,samps_beta[[l]])
+}
+colnames(beta) <- names
+for(j in 1:11){
+  hist(beta[,j],xlab=expression(beta[j]),ylab="Posterior density",
+  breaks=100,main=names[j])
+}
+```
+
+
+```{r}
+pval
+```
+
+
+Model Evaluation (DIC)
+```{r}
+DIC <- dic.samples(model,n.iter=iters,n.thin = 5)
+DIC
+```
+
+Model Evaluation (WAIC)
+```{r}
+samps_like <- coda.samples(model, variable.names = c("like"), n.iter=iters)
+like <- rbind(samps_like[[1]], samps_like[[2]]) # Combine samples from the two chain
+fbar <- colMeans(like)
+P <- sum(apply(log(like),2,var))
+WAIC <- -2*sum(log(fbar))+2*P
+WAIC
+```
+
